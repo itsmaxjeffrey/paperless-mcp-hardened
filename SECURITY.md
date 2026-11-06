@@ -13,8 +13,9 @@ every possible vulnerability has been eliminated here.
 
 ## Supported versions
 
-Only the latest commit of this fork is supported. No binary artifacts are
-published; run from a checkout.
+Only the latest commit of this fork is supported. Installation is supported
+via a source checkout or a local container build from the included
+`Dockerfile`, as described in the README.
 
 ## What this fork hardens
 
@@ -77,9 +78,12 @@ instances you do not own.
 These fixes address a specific reviewed issue list against the stated baseline
 commit. They are mitigations with documented prerequisites and residual risks
 (see [SECURITY-CHANGES.md](SECURITY-CHANGES.md)), not a universal security
-guarantee. No prebuilt binaries, npm package, container image, or hosted
-website is published for this fork; run it from a source checkout or a locally
-built container.
+guarantee. npm publishing is disabled in this fork, so no npm package is
+published for it. CI is configured to publish container artifacts under this
+fork's own GHCR namespace. The supported instructions in the README build
+locally from the source checkout; verify the source commit and provenance before
+using any prebuilt artifact. A remotely published image has not been separately
+verified as part of this review.
 
 ## Hardening guidance for operators
 
