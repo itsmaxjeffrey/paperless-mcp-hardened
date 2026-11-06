@@ -1,10 +1,15 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readFile, writeFile } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
 import { extractText } from "unpdf";
+import { readFromAllowedPath, writeToAllowedPath } from "../security/fs.js";
+import { readBoundedResponse } from "../security/download.js";
 import { ok, err, image, buildQS } from "../paperless/format.js";
 import type { PaperlessClient } from "../paperless/client.js";
+
+async function bufferDownload(res: Response, what: string): Promise<Buffer> {
+  return readBoundedResponse(res, what);
+}
 
 const docSelection = {
   documents: z.array(z.number()).optional().describe("Explicit document IDs"),
@@ -13,12 +18,16 @@ const docSelection = {
     .optional()
     .describe("Apply to every document matching `filters` instead of a list"),
   filters: z
-    .record(z.unknown())
+    .record(z.string(), z.unknown())
     .optional()
     .describe("Filter object used when `all` is true, e.g. { tags__id__all: [3] }"),
 };
 
-export function registerDocumentTools(server: McpServer, client: PaperlessClient) {
+export function registerDocumentTools(
+  server: McpServer,
+  client: PaperlessClient,
+  opts: { filesystem?: boolean } = {},
+) {
   server.tool(
     "get_document_history",
     "Get a document's audit trail: who changed which field, and when",
@@ -41,7 +50,8 @@ export function registerDocumentTools(server: McpServer, client: PaperlessClient
         const res = await client.download(`/api/documents/${id}/thumb/`);
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         const ct = (res.headers.get("content-type") || "").split(";")[0].trim();
-        return image(await res.arrayBuffer(), ct || "image/webp");
+        const thumb = await bufferDownload(res, "thumbnail");
+        return image(thumb.subarray(), ct || "image/webp");
       } catch (e) {
         return err(e);
       }
@@ -74,29 +84,34 @@ export function registerDocumentTools(server: McpServer, client: PaperlessClient
     },
   );
 
-  server.tool(
-    "upload_document_version",
-    "Upload a new file version of an existing document, keeping its metadata and history. Requires Paperless-ngx 3.0+.",
-    {
-      id: z.number().describe("Document ID"),
-      file_path: z.string().describe("Absolute path to the replacement file on disk"),
-      version_label: z.string().optional().describe("Human-readable label for this version"),
-    },
-    async ({ id, file_path, version_label }) => {
-      try {
-        const fileData = await readFile(file_path);
-        const filename = file_path.split("/").pop() || "document";
-        const form = new FormData();
-        form.append("document", new Blob([fileData]), filename);
-        if (version_label !== undefined) form.append("version_label", version_label);
-        const res = await client.upload(`/api/documents/${id}/update_version/`, form);
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-        return ok(await res.json().catch(() => ({ status: "accepted" })));
-      } catch (e) {
-        return err(e);
-      }
-    },
-  );
+  if (opts.filesystem)
+    server.tool(
+      "upload_document_version",
+      "Upload a new file version of an existing document, keeping its metadata and history. Requires Paperless-ngx 3.0+.",
+      {
+        id: z.number().describe("Document ID"),
+        file_path: z
+          .string()
+          .describe(
+            "Absolute path under a configured PAPERLESS_FS_ROOTS directory; must be a regular file inside those roots",
+          ),
+        version_label: z.string().optional().describe("Human-readable label for this version"),
+      },
+      async ({ id, file_path, version_label }) => {
+        try {
+          const fileData = await readFromAllowedPath(file_path);
+          const filename = file_path.split("/").pop() || "document";
+          const form = new FormData();
+          form.append("document", new Blob([fileData]), filename);
+          if (version_label !== undefined) form.append("version_label", version_label);
+          const res = await client.upload(`/api/documents/${id}/update_version/`, form);
+          if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+          return ok(await res.json().catch(() => ({ status: "accepted" })));
+        } catch (e) {
+          return err(e);
+        }
+      },
+    );
 
   server.tool(
     "set_document_version_label",
@@ -156,77 +171,89 @@ export function registerDocumentTools(server: McpServer, client: PaperlessClient
     },
   );
 
-  server.tool(
-    "bulk_download_documents",
-    "Download several documents as a single zip archive written to disk",
-    {
-      documents: z.array(z.number()).describe("Document IDs"),
-      output_path: z.string().describe("Absolute path to write the .zip file to"),
-      content: z
-        .enum(["archive", "originals", "both"])
-        .optional()
-        .describe("Which file versions to include"),
-      compression: z.enum(["none", "deflated", "bzip2", "lzma"]).optional(),
-      follow_formatting: z
-        .boolean()
-        .optional()
-        .describe("Lay the zip out using the storage path filename format"),
-    },
-    async ({ documents, output_path, content, compression, follow_formatting }) => {
-      try {
-        const res = await client.download("/api/documents/bulk_download/", {
-          method: "POST",
-          body: JSON.stringify({ documents, content, compression, follow_formatting }),
-        });
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
-        const buf = Buffer.from(await res.arrayBuffer());
-        await writeFile(output_path, buf);
-        return ok({ path: output_path, bytes: buf.byteLength, documents: documents.length });
-      } catch (e) {
-        return err(e);
-      }
-    },
-  );
+  if (opts.filesystem)
+    server.tool(
+      "bulk_download_documents",
+      "Download several documents as a single zip archive written to disk",
+      {
+        documents: z.array(z.number()).describe("Document IDs"),
+        output_path: z
+          .string()
+          .describe(
+            "Absolute path under a configured PAPERLESS_FS_ROOTS directory; must not already exist",
+          ),
+        content: z
+          .enum(["archive", "originals", "both"])
+          .optional()
+          .describe("Which file versions to include"),
+        compression: z.enum(["none", "deflated", "bzip2", "lzma"]).optional(),
+        follow_formatting: z
+          .boolean()
+          .optional()
+          .describe("Lay the zip out using the storage path filename format"),
+      },
+      async ({ documents, output_path, content, compression, follow_formatting }) => {
+        try {
+          const res = await client.download("/api/documents/bulk_download/", {
+            method: "POST",
+            body: JSON.stringify({ documents, content, compression, follow_formatting }),
+          });
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}: ${await res.text()}`);
+          const buf = await bufferDownload(res, "bulk download archive");
+          await writeToAllowedPath(output_path, buf);
+          return ok({ path: output_path, bytes: buf.byteLength, documents: documents.length });
+        } catch (e) {
+          return err(e);
+        }
+      },
+    );
 
-  server.tool(
-    "extract_document_pages",
-    "Extract pages from a document's PDF into a new PDF written to disk. Processes the file locally; the document in Paperless is not modified.",
-    {
-      id: z.number().describe("Document ID"),
-      pages: z.array(z.number()).min(1).describe("1-based page numbers, kept in the given order"),
-      output_path: z.string().describe("Absolute path to write the extracted .pdf to"),
-      original: z
-        .boolean()
-        .optional()
-        .describe("Use the original file instead of the archived version"),
-    },
-    async ({ id, pages, output_path, original }) => {
-      try {
-        const res = await client.download(`/api/documents/${id}/download/${buildQS({ original })}`);
-        if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-        const ct = res.headers.get("content-type") || "";
-        if (!ct.includes("pdf")) throw new Error(`document is not a PDF (content-type: ${ct})`);
-        const src = await PDFDocument.load(await res.arrayBuffer());
-        const total = src.getPageCount();
-        const outOfRange = pages.filter((p) => p < 1 || p > total);
-        if (outOfRange.length)
-          throw new Error(
-            `pages out of range: ${outOfRange.join(", ")} (document has ${total} pages)`,
+  if (opts.filesystem)
+    server.tool(
+      "extract_document_pages",
+      "Extract pages from a document's PDF into a new PDF written to disk. Processes the file locally; the document in Paperless is not modified.",
+      {
+        id: z.number().describe("Document ID"),
+        pages: z.array(z.number()).min(1).describe("1-based page numbers, kept in the given order"),
+        output_path: z
+          .string()
+          .describe(
+            "Absolute path under a configured PAPERLESS_FS_ROOTS directory; must not already exist",
+          ),
+        original: z
+          .boolean()
+          .optional()
+          .describe("Use the original file instead of the archived version"),
+      },
+      async ({ id, pages, output_path, original }) => {
+        try {
+          const res = await client.download(
+            `/api/documents/${id}/download/${buildQS({ original })}`,
           );
-        const out = await PDFDocument.create();
-        const copied = await out.copyPages(
-          src,
-          pages.map((p) => p - 1),
-        );
-        for (const page of copied) out.addPage(page);
-        const bytes = await out.save();
-        await writeFile(output_path, bytes);
-        return ok({ path: output_path, pages, total_pages: total, bytes: bytes.byteLength });
-      } catch (e) {
-        return err(e);
-      }
-    },
-  );
+          if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
+          const ct = res.headers.get("content-type") || "";
+          if (!ct.includes("pdf")) throw new Error(`document is not a PDF (content-type: ${ct})`);
+          const src = await PDFDocument.load(await bufferDownload(res, "document PDF"));
+          const total = src.getPageCount();
+          const outOfRange = pages.filter((p) => p < 1 || p > total);
+          if (outOfRange.length)
+            throw new Error(
+              `pages out of range: ${outOfRange.join(", ")} (document has ${total} pages)`,
+            );
+          const out = await PDFDocument.create();
+          const copied = await out.copyPages(
+            src,
+            pages.map((p) => p - 1),
+          );
+          for (const page of copied) out.addPage(page);
+          const bytes = await out.save();
+          await writeToAllowedPath(output_path, bytes);
+          return ok({ path: output_path, pages, total_pages: total, bytes: bytes.byteLength });
+        } catch (e) {
+          return err(e);
+        }
+      },
+    );
 
   server.tool(
     "find_document_pages",
@@ -245,7 +272,9 @@ export function registerDocumentTools(server: McpServer, client: PaperlessClient
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         const ct = res.headers.get("content-type") || "";
         if (!ct.includes("pdf")) throw new Error(`document is not a PDF (content-type: ${ct})`);
-        const { totalPages, text } = await extractText(new Uint8Array(await res.arrayBuffer()));
+        const { totalPages, text } = await extractText(
+          new Uint8Array(await bufferDownload(res, "document PDF")),
+        );
         const normalize = (s: string) => s.replace(/\s+/g, " ").toLowerCase();
         const needle = normalize(query);
         const matches = text.flatMap((pageText, i) => {
@@ -342,7 +371,7 @@ export function registerDocumentTools(server: McpServer, client: PaperlessClient
     {
       documents: z.array(z.number()).describe("Document IDs (normally exactly one)"),
       operations: z
-        .array(z.record(z.unknown()))
+        .array(z.record(z.string(), z.unknown()))
         .describe(
           "Page operations. Each object: { page: number (1-based source page), rotate?: 0|90|180|270, doc?: number (output document index for splitting) }. Omit a page to delete it.",
         ),

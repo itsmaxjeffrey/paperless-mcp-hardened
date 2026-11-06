@@ -1,10 +1,14 @@
-name: Pages
+name: Pages (disabled)
 
+# Disabled for the hardened fork: the fork has no verified hosted website, and
+# the site content is under review. Re-enable only once site/index.html has
+# been fully updated for the fork and a verified deployment target exists.
 "on":
-  push:
-    branches: [main]
-    paths: [site/**, .github/workflows/pages.yml]
   workflow_dispatch:
+    inputs:
+      confirm:
+        description: "Type ENABLE to confirm the site is fork-accurate"
+        required: true
 
 permissions:
   contents: read
@@ -17,6 +21,7 @@ concurrency:
 
 jobs:
   deploy:
+    if: github.event.inputs.confirm == 'ENABLE'
     runs-on: ubuntu-latest
     environment:
       name: github-pages

@@ -26,6 +26,25 @@ const { createOAuth, oauthSettingsFromEnv, verifyPkce, decodeJwtPayload, DEFAULT
 const { createStateStore, stateStoreFromEnv } = await import("../oauth-state.js");
 
 const realFetch = globalThis.fetch;
+
+beforeAll(() => {
+  globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+    const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (
+      url === "https://p.example.com/api/profile/" ||
+      url.startsWith("https://p.example.com/api/profile/?")
+    ) {
+      return new Response(JSON.stringify({ username: "mock" }), {
+        status: 200,
+        headers: { "content-type": "application/json" },
+      });
+    }
+    return realFetch(input as RequestInfo, init);
+  }) as typeof fetch;
+});
+afterAll(() => {
+  globalThis.fetch = realFetch;
+});
 const INIT = JSON.stringify({
   jsonrpc: "2.0",
   id: 1,
@@ -269,6 +288,11 @@ describe("OAuth mode", () => {
       }
       if (url === "https://p.example.com/api/auth/headless/app/v1/auth/provider/token")
         return paperlessResponse();
+      if (url === "https://p.example.com/api/profile/")
+        return new Response(JSON.stringify({ username: "mock" }), {
+          status: 200,
+          headers: { "content-type": "application/json" },
+        });
       throw new Error(`unexpected fetch ${url}`);
     });
     const track = globalThis.fetch;

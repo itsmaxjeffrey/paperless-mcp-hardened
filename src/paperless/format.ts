@@ -17,7 +17,7 @@ export function ok(data: unknown) {
   return { content: [{ type: "text" as const, text: JSON.stringify(data) }] };
 }
 
-export function image(data: ArrayBuffer, mimeType: string) {
+export function image(data: Uint8Array, mimeType: string) {
   return {
     content: [{ type: "image" as const, data: Buffer.from(data).toString("base64"), mimeType }],
   };

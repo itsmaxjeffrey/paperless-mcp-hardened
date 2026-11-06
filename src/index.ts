@@ -3,13 +3,16 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { config, adminClient } from "./config.js";
 import { createServer, checkToolSelection } from "./server.js";
 import { startHttpServer } from "./http.js";
+import { fsToolsEnabled } from "./security/fs.js";
 
 await checkToolSelection();
 
 if (config.transport === "http") {
   await startHttpServer();
 } else {
-  const server = await createServer(adminClient);
+  const server = await createServer(adminClient, {
+    filesystem: fsToolsEnabled(),
+  });
   const transport = new StdioServerTransport();
   await server.connect(transport);
 }

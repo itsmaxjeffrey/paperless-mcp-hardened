@@ -1,17 +1,13 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import { readFile } from "node:fs/promises";
+import { readFromAllowedPath } from "../security/fs.js";
+import { readBoundedResponse } from "../security/download.js";
 import { buildQS, ok, err, image, summarizeDocs } from "../paperless/format.js";
 import type { PaperlessClient } from "../paperless/client.js";
+import { config } from "../config.js";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = ["image/png", "image/jpeg", "image/gif", "image/webp"];
-
-function imageTooLarge(size: number) {
-  return new Error(
-    `image is ${size} bytes, over the ${MAX_IMAGE_BYTES} byte limit; use get_document_thumbnail for a smaller preview`,
-  );
-}
 
 const permissionGrant = z.object({
   users: z.array(z.number()).optional().describe("User IDs"),
@@ -54,7 +50,11 @@ const V9_TRIGGER_TYPES: Record<z.infer<typeof triggerSourceField>, string> = {
 
 const V9_ACCEPT = { Accept: "application/json; version=9" };
 
-export function registerCoreTools(server: McpServer, client: PaperlessClient) {
+export function registerCoreTools(
+  server: McpServer,
+  client: PaperlessClient,
+  opts: { filesystem?: boolean } = {},
+) {
   // --- System ---
 
   server.tool("get_status", "Get Paperless-ngx server status", {}, async () => {
@@ -236,20 +236,16 @@ export function registerCoreTools(server: McpServer, client: PaperlessClient) {
         if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
         const ct = res.headers.get("content-type") || "";
         if (ct.includes("text") || ct.includes("json") || ct.includes("xml")) {
-          return ok({ content_type: ct, content: await res.text() });
+          const buf = await readBoundedResponse(res, "document");
+          return ok({ content_type: ct, content: buf.toString() });
         }
         const mime = ct.split(";")[0].trim().toLowerCase();
         if (IMAGE_TYPES.includes(mime)) {
-          const declared = Number(res.headers.get("content-length") || 0);
-          if (declared > MAX_IMAGE_BYTES) {
-            await res.body?.cancel();
-            throw imageTooLarge(declared);
-          }
-          const buf = await res.arrayBuffer();
-          if (buf.byteLength > MAX_IMAGE_BYTES) throw imageTooLarge(buf.byteLength);
+          const cap = Math.min(MAX_IMAGE_BYTES, config.maxDownloadBytes);
+          const buf = await readBoundedResponse(res, "image", cap);
           return image(buf, mime);
         }
-        const buf = await res.arrayBuffer();
+        const buf = await readBoundedResponse(res, "document");
         return ok({
           content_type: ct,
           size: buf.byteLength,
@@ -304,53 +300,60 @@ export function registerCoreTools(server: McpServer, client: PaperlessClient) {
     },
   );
 
-  server.tool(
-    "upload_document",
-    "Upload a document from a local file path",
-    {
-      file_path: z.string().describe("Absolute path to the file on disk"),
-      title: z.string().optional(),
-      correspondent: z.number().optional(),
-      document_type: z.number().optional(),
-      storage_path: z.number().optional(),
-      tags: z.array(z.number()).optional(),
-      archive_serial_number: z.number().optional(),
-      created: z.string().optional().describe("Created date (YYYY-MM-DD)"),
-    },
-    async ({
-      file_path,
-      title,
-      correspondent,
-      document_type,
-      storage_path,
-      tags,
-      archive_serial_number,
-      created,
-    }) => {
-      try {
-        const fileData = await readFile(file_path);
-        const filename = file_path.split("/").pop() || "document";
-        const form = new FormData();
-        form.append("document", new Blob([fileData]), filename);
-        if (title !== undefined) form.append("title", title);
-        if (correspondent !== undefined) form.append("correspondent", String(correspondent));
-        if (document_type !== undefined) form.append("document_type", String(document_type));
-        if (storage_path !== undefined) form.append("storage_path", String(storage_path));
-        if (archive_serial_number !== undefined)
-          form.append("archive_serial_number", String(archive_serial_number));
-        if (created !== undefined) form.append("created", created);
-        if (tags) tags.forEach((t) => form.append("tags", String(t)));
+  if (opts.filesystem)
+    server.tool(
+      "upload_document",
+      "Upload a document from a local file path",
+      {
+        file_path: z
+          .string()
+          .describe(
+            "Absolute path under a configured PAPERLESS_FS_ROOTS directory; must be a regular file inside those roots",
+          ),
+        title: z.string().optional(),
+        correspondent: z.number().optional(),
+        document_type: z.number().optional(),
+        storage_path: z.number().optional(),
+        tags: z.array(z.number()).optional(),
+        archive_serial_number: z.number().optional(),
+        created: z.string().optional().describe("Created date (YYYY-MM-DD)"),
+      },
+      async ({
+        file_path,
+        title,
+        correspondent,
+        document_type,
+        storage_path,
+        tags,
+        archive_serial_number,
+        created,
+      }) => {
+        try {
+          const fileData = await readFromAllowedPath(file_path);
+          const filename = file_path.split("/").pop() || "document";
+          const form = new FormData();
+          form.append("document", new Blob([fileData]), filename);
+          if (title !== undefined) form.append("title", title);
+          if (correspondent !== undefined) form.append("correspondent", String(correspondent));
+          if (document_type !== undefined) form.append("document_type", String(document_type));
+          if (storage_path !== undefined) form.append("storage_path", String(storage_path));
+          if (archive_serial_number !== undefined)
+            form.append("archive_serial_number", String(archive_serial_number));
+          if (created !== undefined) form.append("created", created);
+          if (tags) tags.forEach((t) => form.append("tags", String(t)));
 
-        const res = await client.upload("/api/documents/post_document/", form);
-        if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
-        return ok(
-          await res.json().catch(() => ({ status: "accepted", task: res.headers.get("location") })),
-        );
-      } catch (e) {
-        return err(e);
-      }
-    },
-  );
+          const res = await client.upload("/api/documents/post_document/", form);
+          if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
+          return ok(
+            await res
+              .json()
+              .catch(() => ({ status: "accepted", task: res.headers.get("location") })),
+          );
+        } catch (e) {
+          return err(e);
+        }
+      },
+    );
 
   server.tool(
     "get_document_metadata",
@@ -445,7 +448,10 @@ export function registerCoreTools(server: McpServer, client: PaperlessClient) {
         .describe(
           "Operation: set_correspondent, set_document_type, set_storage_path, add_tag, remove_tag, modify_tags, delete, redo_ocr, reprocess, set_permissions, rotate, merge, split, convert",
         ),
-      parameters: z.record(z.unknown()).optional().describe("Operation-specific parameters"),
+      parameters: z
+        .record(z.string(), z.unknown())
+        .optional()
+        .describe("Operation-specific parameters"),
     },
     async ({ documents, method, parameters }) => {
       try {
@@ -1050,7 +1056,7 @@ export function registerCoreTools(server: McpServer, client: PaperlessClient) {
         ])
         .describe("Field data type"),
       extra_data: z
-        .record(z.unknown())
+        .record(z.string(), z.unknown())
         .optional()
         .describe(
           "For 'select': { select_options: [{ label }] }. For 'monetary': { default_currency }",
@@ -1076,7 +1082,7 @@ export function registerCoreTools(server: McpServer, client: PaperlessClient) {
     {
       id: z.number(),
       name: z.string().optional(),
-      extra_data: z.record(z.unknown()).optional(),
+      extra_data: z.record(z.string(), z.unknown()).optional(),
       owner: ownerField,
       set_permissions: setPermissionsField,
     },

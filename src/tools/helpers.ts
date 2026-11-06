@@ -3,6 +3,7 @@ import { z } from "zod";
 import { buildQS, ok, err } from "../paperless/format.js";
 import type { PaginatedResponse } from "../paperless/format.js";
 import type { PaperlessClient } from "../paperless/client.js";
+import { config } from "../config.js";
 
 interface Correspondent {
   id: number;
@@ -62,6 +63,10 @@ export function registerHelperTools(server: McpServer, client: PaperlessClient) 
     },
     async ({ ids, max_content_length }) => {
       try {
+        if (ids.length > config.maxIdsPerRequest)
+          throw new Error(
+            `too many document IDs requested (${ids.length}); the limit is ${config.maxIdsPerRequest}`,
+          );
         const docs = await Promise.all(
           ids.map(
             (id) => client.fetch(`/api/documents/${id}/`) as Promise<Record<string, unknown>>,
@@ -259,67 +264,6 @@ export function registerHelperTools(server: McpServer, client: PaperlessClient) 
           new_this_year: added,
           combos_in_both: [...previousGroups.keys()].filter((k) => currentGroups.has(k)).length,
         });
-      } catch (e) {
-        return err(e);
-      }
-    },
-  );
-
-  server.tool(
-    "upload_from_url",
-    "Download a file from a URL and upload it to Paperless-ngx",
-    {
-      url: z.string().describe("URL to download the file from"),
-      title: z.string().optional(),
-      correspondent: z.number().optional(),
-      document_type: z.number().optional(),
-      storage_path: z.number().optional(),
-      tags: z.array(z.number()).optional(),
-    },
-    async ({ url, title, correspondent, document_type, storage_path, tags }) => {
-      try {
-        const parsed = new URL(url);
-        if (!["http:", "https:"].includes(parsed.protocol)) {
-          throw new Error(
-            `Unsupported URL scheme: ${parsed.protocol}. Only http and https are allowed.`,
-          );
-        }
-        const MAX_DOWNLOAD_SIZE = 100 * 1024 * 1024; // 100 MB
-        const fileRes = await fetch(url, { redirect: "error" });
-        if (!fileRes.ok)
-          throw new Error(`Failed to download: ${fileRes.status} ${fileRes.statusText}`);
-        const contentLength = parseInt(fileRes.headers.get("content-length") || "0", 10);
-        if (contentLength > MAX_DOWNLOAD_SIZE) {
-          throw new Error(`File too large: ${contentLength} bytes (max ${MAX_DOWNLOAD_SIZE})`);
-        }
-
-        const contentDisposition = fileRes.headers.get("content-disposition");
-        let filename = url.split("/").pop()?.split("?")[0] || "document";
-        if (contentDisposition) {
-          const match = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
-          if (match) filename = match[1].replace(/['"]/g, "");
-        }
-
-        const blob = await fileRes.blob();
-        const form = new FormData();
-        form.append("document", blob, filename);
-        if (title !== undefined) form.append("title", title);
-        if (correspondent !== undefined) form.append("correspondent", String(correspondent));
-        if (document_type !== undefined) form.append("document_type", String(document_type));
-        if (storage_path !== undefined) form.append("storage_path", String(storage_path));
-        if (tags) tags.forEach((t) => form.append("tags", String(t)));
-
-        const res = await client.upload("/api/documents/post_document/", form);
-        if (!res.ok) throw new Error(`Upload failed: ${res.status}: ${await res.text()}`);
-
-        return ok(
-          await res.json().catch(() => ({
-            status: "accepted",
-            task: res.headers.get("location"),
-            filename,
-            source_url: url,
-          })),
-        );
       } catch (e) {
         return err(e);
       }

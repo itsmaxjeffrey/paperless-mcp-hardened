@@ -33,7 +33,7 @@ async function connect(env: Record<string, string> = {}, token = "admin-tok") {
   const { createServer } = await import("../server.js");
   const { clientFor } = await import("../config.js");
   const { toolAnnotations } = await import("../tools/annotations.js");
-  const server = await createServer(clientFor(token));
+  const server = await createServer(clientFor(token), { filesystem: true });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await server.connect(serverTransport);
   const client = new Client({ name: "test", version: "0" });
@@ -69,7 +69,7 @@ describe("tool annotations", () => {
     expect(toolAnnotations.delete_document.destructiveHint).toBe(true);
     expect(toolAnnotations.empty_trash.destructiveHint).toBe(true);
     expect(toolAnnotations.create_tag.destructiveHint).toBe(false);
-    expect(toolAnnotations.upload_from_url.openWorldHint).toBe(true);
+    expect(toolAnnotations.upload_from_url).toBeUndefined();
     expect(toolAnnotations.email_documents.openWorldHint).toBe(true);
     expect(toolAnnotations.get_document.openWorldHint).toBe(false);
     expect(toolAnnotations.run_task.openWorldHint).toBe(true);
@@ -85,6 +85,47 @@ describe("server version", () => {
 });
 
 describe("tool filtering", () => {
+  it("filesystem tools are absent without the filesystem flag (HTTP transport)", async () => {
+    stubEnv({});
+    const { createServer } = await import("../server.js");
+    const { clientFor } = await import("../config.js");
+    const server = await createServer(clientFor("admin-tok"), { filesystem: false });
+    const [cT, sT] = InMemoryTransport.createLinkedPair();
+    await server.connect(sT);
+    const c = new Client({ name: "test", version: "0" });
+    await c.connect(cT);
+    const { tools } = await c.listTools();
+    const names = tools.map((t) => t.name);
+    for (const t of [
+      "upload_document",
+      "upload_document_version",
+      "bulk_download_documents",
+      "extract_document_pages",
+      "upload_from_url",
+    ])
+      expect(names).not.toContain(t);
+    expect(names).toContain("search_documents");
+    expect(names).toContain("list_documents");
+  });
+
+  it("stdio enables filesystem tools when roots are configured (index.ts stdio path)", async () => {
+    stubEnv({ PAPERLESS_FS_ROOTS: "/tmp/allowed" });
+    const { createServer } = await import("../server.js");
+    const { adminClient } = await import("../config.js");
+    const { fsToolsEnabled } = await import("../security/fs.js");
+    // Mirrors the stdio branch of src/index.ts.
+    const server = await createServer(adminClient, { filesystem: fsToolsEnabled() });
+    const [cT, sT] = InMemoryTransport.createLinkedPair();
+    await server.connect(sT);
+    const c = new Client({ name: "test", version: "0" });
+    await c.connect(cT);
+    const names = (await c.listTools()).tools.map((t) => t.name);
+    expect(fsToolsEnabled()).toBe(true);
+    expect(names).toContain("upload_document");
+    expect(names).toContain("bulk_download_documents");
+    expect(names).not.toContain("upload_from_url");
+  });
+
   it("keeps sync_embeddings admin-only", async () => {
     const { names } = await connect({}, "user-tok");
     expect(names).toContain("semantic_search");

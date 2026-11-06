@@ -2,6 +2,7 @@ import { readFileSync } from "node:fs";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { PaperlessClient } from "./paperless/client.js";
 import { config, adminClient, type Toolset } from "./config.js";
+import { fsToolsEnabled } from "./security/fs.js";
 import { toolAnnotations } from "./tools/annotations.js";
 import { registerCoreTools } from "./tools/core.js";
 import { registerWorkflowTools } from "./tools/workflow.js";
@@ -19,7 +20,11 @@ export const version: string = JSON.parse(
   readFileSync(new URL("../package.json", import.meta.url), "utf8"),
 ).version;
 
-type Register = (server: McpServer, client: PaperlessClient) => void;
+type Register = (
+  server: McpServer,
+  client: PaperlessClient,
+  opts: { filesystem?: boolean },
+) => void;
 
 const toolsets: Record<Exclude<Toolset, "search">, Register> = {
   core: registerCoreTools,
@@ -47,10 +52,14 @@ function toolFilter(server: McpServer): McpServer {
   });
 }
 
-async function registerTools(server: McpServer, client: PaperlessClient) {
+async function registerTools(
+  server: McpServer,
+  client: PaperlessClient,
+  opts: { filesystem?: boolean } = {},
+) {
   const filtered = toolFilter(server);
   for (const [name, register] of Object.entries(toolsets)) {
-    if (config.toolsets.includes(name as Toolset)) register(filtered, client);
+    if (config.toolsets.includes(name as Toolset)) register(filtered, client, opts);
   }
   if (config.embeddingsEnabled && config.toolsets.includes("search")) {
     const { registerSearchTools } = await import("./tools/search.js");
@@ -58,9 +67,12 @@ async function registerTools(server: McpServer, client: PaperlessClient) {
   }
 }
 
-export async function createServer(client: PaperlessClient): Promise<McpServer> {
+export async function createServer(
+  client: PaperlessClient,
+  opts: { filesystem?: boolean } = {},
+): Promise<McpServer> {
   const server = new McpServer({ name: "paperless-mcp", version });
-  await registerTools(server, client);
+  await registerTools(server, client, opts);
   registerPrompts(server);
   registerResources(server, client);
   return server;
@@ -73,7 +85,9 @@ export async function checkToolSelection(): Promise<void> {
   }
   const names: string[] = [];
   const recorder = { tool: (name: string) => names.push(name) } as unknown as McpServer;
-  await registerTools(recorder, adminClient);
+  await registerTools(recorder, adminClient, {
+    filesystem: config.transport !== "http" && fsToolsEnabled(),
+  });
   if (names.length === 0) {
     console.error(
       "No tools left to register: check PAPERLESS_TOOLSETS, PAPERLESS_READ_ONLY, PAPERLESS_DISABLED_TOOLS and EMBEDDINGS_ENABLED",

@@ -20,7 +20,7 @@ const server = {
     tools.set(name, handler);
   },
 };
-registerDocumentTools(server as any, client);
+registerDocumentTools(server as any, client, { filesystem: true });
 registerCoreTools(server as any, client);
 
 const bytes = Buffer.from([0x52, 0x49, 0x46, 0x46, 0x01, 0x02, 0x03]);
@@ -111,7 +111,7 @@ describe("download_document images", () => {
     );
     const result = await tools.get("download_document")!({ id: 3 });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("get_document_thumbnail");
+    expect(result.content[0].text).toMatch(/download limit|while streaming/);
   });
 
   it("rejects by content-length before reading the body", async () => {
@@ -122,7 +122,7 @@ describe("download_document images", () => {
     vi.spyOn(client, "download").mockResolvedValue(res);
     const result = await tools.get("download_document")!({ id: 3 });
     expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain("6291456 bytes");
+    expect(result.content[0].text).toContain("6291456");
     expect(read).not.toHaveBeenCalled();
   });
 

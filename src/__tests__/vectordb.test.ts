@@ -1,5 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import {
+  chmodSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+  statSync,
+  existsSync,
+} from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -190,5 +199,78 @@ describe.skipIf(!nativeAvailable)("vectordb dimension change", () => {
 
     expect(mod2.getIndexedDocIds()).toEqual([]);
     expect(mod2.getSyncState("embedding_dimensions")).toBe("8");
+  });
+});
+
+describe.skipIf(!nativeAvailable || process.platform === "win32")("vectordb permissions", () => {
+  it("sets the data directory mode to 0700, even when it pre-exists more openly", async () => {
+    chmodSync(tempDir, 0o755);
+    const { getDb } = await import("../vectordb.js");
+    getDb();
+    expect(statSync(tempDir).mode & 0o777).toBe(0o700);
+  });
+
+  it("sets the database file mode to 0600 for a newly created database", async () => {
+    const { getDb } = await import("../vectordb.js");
+    getDb();
+    expect(statSync(join(tempDir, "vectors.db")).mode & 0o777).toBe(0o600);
+  });
+
+  it("tightens an existing database file that is too permissive", async () => {
+    writeFileSync(join(tempDir, "vectors.db"), "not a real db");
+    chmodSync(join(tempDir, "vectors.db"), 0o644);
+    const { getDb } = await import("../vectordb.js");
+    expect(() => getDb()).toThrow(); // our string is not a valid sqlite file
+    expect(statSync(join(tempDir, "vectors.db")).mode & 0o777).toBe(0o600);
+  });
+
+  it("refuses a dangling symlinked database target", async () => {
+    symlinkSync(join(tempDir, "does-not-exist.db"), join(tempDir, "vectors.db"));
+    const { getDb } = await import("../vectordb.js");
+    expect(() => getDb()).toThrow(/not a regular file/);
+  });
+
+  it("refuses a symlinked database target", async () => {
+    const outside = join(tempDir, "outside.db");
+    writeFileSync(outside, "");
+    symlinkSync(outside, join(tempDir, "vectors.db"));
+    const { getDb } = await import("../vectordb.js");
+    expect(() => getDb()).toThrow(/not a regular file/);
+  });
+
+  it("refuses a non-regular database target", async () => {
+    mkdirSync(join(tempDir, "vectors.db"));
+    const { getDb } = await import("../vectordb.js");
+    expect(() => getDb()).toThrow(/not a regular file/);
+  });
+
+  it("refuses a symlinked data directory without following it", async () => {
+    const real = join(tempDir, "real-data");
+    mkdirSync(real, { mode: 0o700 });
+    const link = join(tempDir, "link-data");
+    symlinkSync(real, link);
+    vi.stubEnv("PAPERLESS_MCP_DATA", link);
+    vi.resetModules();
+    const { getDb } = await import("../vectordb.js");
+    expect(() => getDb()).toThrow(/not a regular directory/);
+    expect(existsSync(join(real, "vectors.db"))).toBe(false);
+    expect(statSync(real).mode & 0o777).toBe(0o700);
+  });
+
+  it("fails clearly when the data directory cannot be prepared", async () => {
+    const blocker = join(tempDir, "blocker");
+    writeFileSync(blocker, "");
+    vi.stubEnv("PAPERLESS_MCP_DATA", blocker);
+    vi.resetModules();
+    const { getDb } = await import("../vectordb.js");
+    expect(() => getDb()).toThrow(/not a regular directory/);
+  });
+
+  it("leaves unrelated files in the data directory untouched", async () => {
+    writeFileSync(join(tempDir, "other.txt"), "keep me");
+    const { getDb } = await import("../vectordb.js");
+    getDb();
+    expect(existsSync(join(tempDir, "other.txt"))).toBe(true);
+    expect(statSync(join(tempDir, "other.txt").toString()).isFile()).toBe(true);
   });
 });

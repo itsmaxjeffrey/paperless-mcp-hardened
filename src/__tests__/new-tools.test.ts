@@ -22,7 +22,7 @@ function collectTools() {
   registerMailTools(server as any, client);
   registerSharingTools(server as any, client);
   registerSystemTools(server as any, client);
-  registerDocumentTools(server as any, client);
+  registerDocumentTools(server as any, client, { filesystem: true });
   return tools;
 }
 

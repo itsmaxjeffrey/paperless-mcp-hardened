@@ -1,11 +1,45 @@
-# paperless-mcp
+# paperless-mcp (security-hardening fork)
 
-[![npm version](https://img.shields.io/npm/v/@orellbuehler/paperless-mcp)](https://www.npmjs.com/package/@orellbuehler/paperless-mcp)
-[![CI](https://github.com/OrellBuehler/paperless-mcp/actions/workflows/ci.yml/badge.svg)](https://github.com/OrellBuehler/paperless-mcp/actions/workflows/ci.yml)
-[![license](https://img.shields.io/npm/l/@orellbuehler/paperless-mcp)](LICENSE)
-[![node](https://img.shields.io/node/v/@orellbuehler/paperless-mcp)](package.json)
+> **About this fork.** This is an independent security-hardening fork of
+> [`OrellBuehler/paperless-mcp`](https://github.com/OrellBuehler/paperless-mcp)
+> (`@orellbuehler/paperless-mcp` on npm). All credit for the original server, its
+> design, and its tool catalog belongs to the upstream author; the project remains
+> MIT-licensed and the upstream `LICENSE` and attribution are preserved unchanged.
+> This fork is based on upstream commit `11710d7c6470058bb8c1a12a0c07e1426d0d1b25`
+> (package version 1.6.0).
+>
+> It exists to fix a set of reviewed security issues. The full issue/fix matrix,
+> realistic exploitation prerequisites, and residual risks are documented in
+> [SECURITY.md](SECURITY.md) and [SECURITY-CHANGES.md](SECURITY-CHANGES.md).
+> This fork is not published to npm; install from a checkout of this repository.
+> No claim is made that every possible vulnerability has been eliminated.
 
-**Website:** <https://orellbuehler.github.io/paperless-mcp/>
+License: MIT ([LICENSE](LICENSE), inherited from the upstream project). CI runs
+`format:check`, `lint`, `typecheck` and `test` on pushes to `main` and pull requests.
+The hardening changes were implemented with OmO using GLM 5.3 Flash and reviewed
+with regression tests and local protocol checks.
+
+## Security changes
+
+These findings concern the pinned upstream baseline, not every upstream release.
+See [the detailed review and migration notes](SECURITY-CHANGES.md) for attacker
+prerequisites, evidence, configuration changes, and limitations.
+
+| Baseline issue                                                             | Change in this fork                                                                           |
+| -------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Nonempty tokens could initialize HTTP sessions without validation          | Validate with Paperless before MCP operations and recheck each new request                    |
+| Upload tools could read arbitrary server files                             | Disable filesystem tools over HTTP; require explicit allowed folders for local use            |
+| Export tools could overwrite caller-selected server files                  | Confine local outputs to allowed folders and refuse existing files                            |
+| URL ingestion could reach internal services and buffer unlimited responses | Remove `upload_from_url`                                                                      |
+| Request bodies, sessions, and some downloads lacked bounds                 | Add byte limits, deadlines, session expiry, and admission limits with concurrency regressions |
+| The shared search index relied on default filesystem permissions           | Use private directory/database permissions on POSIX and reject symlink targets                |
+| Dependencies matched published security advisories                         | Update the lockfile, migrate to Zod 4, and pin patched development-only `minimatch`           |
+
+The container runs as a non-root user, and HTTP binds to loopback by default.
+For this release, all **342 tests passed** and both full and production dependency
+audits reported **zero vulnerabilities**. Tests include a simulated Paperless API
+and real MCP HTTP transport; a live Paperless installation and real identity
+provider were not used. These checks do not establish the absence of other bugs.
 
 Connect AI agents to [Paperless-ngx](https://docs.paperless-ngx.com/). This [Model Context Protocol](https://modelcontextprotocol.io/) server exposes the Paperless-ngx REST API as 115+ tools, so assistants like Claude can search, upload, tag, and organize your documents — with optional semantic search over your whole archive using local vector embeddings.
 
@@ -19,7 +53,7 @@ Works with any MCP client: Claude Code, Claude Desktop, or your own agent.
 - **Mail, sharing, and trash** — configure mail accounts and rules, create public share links, email documents, and restore from the trash
 - **Paperless-ngx 3.0 ready** — document versions, PDF editing, share bundles, and task management, with the REST API version pinned so 2.x and 3.x both behave predictably
 - **Single- or multi-user** — stdio transport for personal use, or an HTTP transport where every user authenticates with their own Paperless token and only sees their own documents
-- **Docker-ready** — prebuilt image on GHCR, drop-in sidecar for your Paperless-ngx compose stack
+- **Docker-ready** — build the image locally with the included `Dockerfile`, drop-in sidecar for your Paperless-ngx compose stack
 
 Things you can ask once it's connected:
 
@@ -35,16 +69,36 @@ Things you can ask once it's connected:
 
 ## Quick start
 
-The package is published as [`@orellbuehler/paperless-mcp`](https://www.npmjs.com/package/@orellbuehler/paperless-mcp) and runs directly with `npx` — no clone or build needed.
+> **This fork is not published to npm.** Install from a checkout of this
+> repository (see the build steps below, then run `node dist/index.js`),
+> and point your MCP client at that command instead of `npx`. The upstream
+> package [`@orellbuehler/paperless-mcp`](https://www.npmjs.com/package/@orellbuehler/paperless-mcp)
+> belongs to the upstream project. The changes documented here apply to this
+> fork and the specific v1.6.0 baseline above; check upstream separately for
+> changes in later releases.
 
 1. Get your API token from Paperless-ngx (Settings > Administration, or `POST /api/token/`)
-2. Register the server with your MCP client. With Claude Code:
+2. Build from a checkout of this repository:
+
+```bash
+git clone https://github.com/itsmaxjeffrey/paperless-mcp-hardened.git
+cd paperless-mcp-hardened
+npm ci --ignore-scripts   # never runs third-party install scripts
+npm run build             # src/ -> dist/
+# Semantic search only: build the optional native module
+npm rebuild better-sqlite3
+```
+
+Following these instructions builds this fork from source.
+
+3. Register the server with your MCP client. With Claude Code:
 
 ```bash
 claude mcp add paperless \
   --env PAPERLESS_URL=https://your-paperless-instance.example.com \
   --env PAPERLESS_TOKEN=your-api-token \
-  -- npx -y @orellbuehler/paperless-mcp
+  --env PAPERLESS_READ_ONLY=true \
+  -- node /path/to/this/checkout/dist/index.js
 ```
 
 Or as JSON config (Claude Desktop and most other MCP clients use the same shape):
@@ -53,20 +107,30 @@ Or as JSON config (Claude Desktop and most other MCP clients use the same shape)
 {
   "mcpServers": {
     "paperless": {
-      "command": "npx",
-      "args": ["-y", "@orellbuehler/paperless-mcp"],
+      "command": "node",
+      "args": ["/path/to/this/checkout/dist/index.js"],
       "env": {
         "PAPERLESS_URL": "https://your-paperless-instance.example.com",
-        "PAPERLESS_TOKEN": "your-api-token"
+        "PAPERLESS_TOKEN": "your-api-token",
+        "PAPERLESS_READ_ONLY": "true"
       }
     }
   }
 }
 ```
 
-3. Restart your MCP client. The tools are available immediately.
+4. Restart your MCP client. The tools are available immediately.
 
-Semantic search is off by default. To enable it, add `"EMBEDDINGS_ENABLED": "true"` (and `"OPENAI_API_KEY"` if using the OpenAI embedding provider), then run `sync_embeddings` once to index your documents. The `better-sqlite3` and `sqlite-vec` native modules are installed automatically as optional dependencies (this requires a build toolchain on your platform); the core document tools work without them.
+The examples start with read-only tools. To enable editing, set
+`PAPERLESS_READ_ONLY=false` and grant only the required Paperless permissions to
+the agent's account.
+
+Semantic search is off by default. To enable it, add `"EMBEDDINGS_ENABLED": "true"`
+(and `"OPENAI_API_KEY"` if using the OpenAI embedding provider), then run
+`sync_embeddings` once to index your documents. The optional `better-sqlite3`
+and `sqlite-vec` native modules must be built for this to work — with
+`npm ci --ignore-scripts` they are not, so run `npm rebuild better-sqlite3`
+(requires a C++ toolchain). The core document tools work without them.
 
 ## Available Tools
 
@@ -107,13 +171,13 @@ Semantic search is off by default. To enable it, add `"EMBEDDINGS_ENABLED": "tru
 
 ### Extended Tools
 
-| Category        | Tools                                                                                           | Description                                                                                                                                    |
-| --------------- | ----------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
-| Semantic search | `semantic_search`, `sync_embeddings`, `embedding_status`                                        | Vector similarity search using local sqlite-vec database                                                                                       |
-| Content         | `get_document_content`                                                                          | Extract OCR'd text content from documents                                                                                                      |
-| Workflows       | `auto_classify_document`, `process_inbox`, `bulk_tag_by_content`                                | AI-assisted classification and bulk operations                                                                                                 |
-| Helpers         | `get_documents_by_correspondent`, `monthly_summary`, `yearly_document_check`, `upload_from_url` | Convenience tools for common workflows                                                                                                         |
-| PDF pages       | `extract_document_pages`, `find_document_pages`                                                 | Extract pages into a new PDF file or find the pages containing a text snippet — processed locally, without modifying the document in Paperless |
+| Category        | Tools                                                                        | Description                                                                                                                                    |
+| --------------- | ---------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| Semantic search | `semantic_search`, `sync_embeddings`, `embedding_status`                     | Vector similarity search using local sqlite-vec database                                                                                       |
+| Content         | `get_document_content`                                                       | Extract OCR'd text content from documents                                                                                                      |
+| Workflows       | `auto_classify_document`, `process_inbox`, `bulk_tag_by_content`             | AI-assisted classification and bulk operations                                                                                                 |
+| Helpers         | `get_documents_by_correspondent`, `monthly_summary`, `yearly_document_check` | Convenience tools for common workflows (`upload_from_url` removed in this fork, see SECURITY-CHANGES.md)                                       |
+| PDF pages       | `extract_document_pages`, `find_document_pages`                              | Extract pages into a new PDF file or find the pages containing a text snippet — processed locally, without modifying the document in Paperless |
 
 ### Paperless-ngx 3.0+ Tools
 
@@ -131,7 +195,17 @@ These call endpoints that only exist on Paperless-ngx 3.0 and later. On older se
 
 ## Limiting tools
 
-Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so clients can tell reads from writes, ask for confirmation before destructive calls, and flag tools that reach beyond Paperless: `upload_from_url`, `email_document`, `email_documents`, `process_mail_account`, `test_mail_account`, `get_remote_version`, `get_document_ai_suggestions`, `run_task` (its `llm_index` task sends content to the configured LLM), and the semantic-search tools that call the embedding provider.
+Every tool carries MCP annotations (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`) so clients can tell reads from writes, ask for confirmation before destructive calls, and flag tools that reach beyond Paperless: `email_document`, `email_documents`, `process_mail_account`, `test_mail_account`, `get_remote_version`, `get_document_ai_suggestions`, `run_task` (its `llm_index` task sends content to the configured LLM), and the semantic-search tools that call the embedding provider.
+
+> **Filesystem tools (this fork).** The tools that touch the local filesystem —
+> `upload_document`, `upload_document_version`, `bulk_download_documents`, and
+> `extract_document_pages` — are disabled entirely on the HTTP transport (all
+> users, including OAuth sessions). On stdio they only register when
+> `PAPERLESS_FS_ROOTS` is configured, and every path is restricted to those
+> roots: canonical containment, symlink escape prevention, exclusive writes (an
+> output path that already exists is refused, never overwritten), and bounded
+> regular-file reads (`PAPERLESS_FS_MAX_READ_BYTES`, default 50 MB).
+> `upload_from_url` has been removed from this fork.
 
 All tools are registered by default. To save model context or lock the server down:
 
@@ -178,37 +252,52 @@ Set `PAPERLESS_API_VERSION=10` to opt into v10, or `PAPERLESS_API_VERSION=none` 
 
 ## Environment Variables
 
-| Variable                       | Required        | Description                                                                                                                                                       |
-| ------------------------------ | --------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PAPERLESS_URL`                | Yes             | Base URL of your Paperless-ngx instance                                                                                                                           |
-| `PAPERLESS_TOKEN`              | Yes             | API token. In `stdio` mode this is the user's token; in `http` mode it is the admin/indexer token (builds the shared embedding index and gates `sync_embeddings`) |
-| `PAPERLESS_API_VERSION`        | No              | Paperless REST API version to request (default: `9`). Set to `10` for Paperless-ngx 3.0+ v10 semantics, or `none` to send no version header                       |
-| `PAPERLESS_TIMEOUT_MS`         | No              | Per-request timeout in milliseconds (default: `60000`; `0` disables). GET downloads are timed until headers arrive; uploads and bulk downloads are not timed      |
-| `PAPERLESS_MAX_RETRIES`        | No              | Retries for GET/HEAD requests on network errors, timeouts, 429, 502, 503 and 504, with exponential backoff and `Retry-After` support (default: `2`, max `10`)     |
-| `MCP_TRANSPORT`                | No              | `stdio` (default) or `http`                                                                                                                                       |
-| `PORT`                         | No              | Port for the HTTP server (default: `3001`, http mode only)                                                                                                        |
-| `EMBEDDINGS_ENABLED`           | No              | Set to `true` to enable semantic search tools (default: off)                                                                                                      |
-| `PAPERLESS_TOOLSETS`           | No              | Comma-separated tool groups to register (default: all). See [Limiting tools](#limiting-tools)                                                                     |
-| `PAPERLESS_READ_ONLY`          | No              | Set to `true` to register only read-only tools (default: off)                                                                                                     |
-| `PAPERLESS_DISABLED_TOOLS`     | No              | Comma-separated tool names to skip                                                                                                                                |
-| `MCP_ALLOWED_ORIGINS`          | No              | Comma-separated `Origin` allowlist for browser clients (http mode). Empty (default) blocks all cross-origin browser requests; use `*` to allow any                |
-| `MCP_ALLOWED_HOSTS`            | No              | Comma-separated `Host` allowlist for DNS-rebinding protection (http mode). Empty (default) disables host validation                                               |
-| `MCP_OAUTH_ISSUER`             | No              | OIDC issuer URL of your identity provider. Setting it enables [OAuth mode](#oauth-optional) (http mode only)                                                      |
-| `MCP_OAUTH_CLIENT_ID`          | With OAuth      | Client ID of the OIDC client Paperless uses                                                                                                                       |
-| `MCP_OAUTH_CLIENT_SECRET`      | No              | Client secret of that client (omit for public clients)                                                                                                            |
-| `MCP_OAUTH_PAPERLESS_PROVIDER` | With OAuth      | `provider_id` of the OIDC app in `PAPERLESS_SOCIALACCOUNT_PROVIDERS`                                                                                              |
-| `MCP_PUBLIC_URL`               | With OAuth      | Externally reachable origin of this server, e.g. `https://mcp.example.com`                                                                                        |
-| `MCP_OAUTH_SCOPES`             | No              | Scopes requested from the identity provider (default: `openid email profile`)                                                                                     |
-| `MCP_OAUTH_TOKEN_AUTH_METHOD`  | No              | `client_secret_post` or `client_secret_basic` for the IdP token request (default: picked from discovery, like Paperless)                                          |
-| `MCP_OAUTH_ACCESS_TOKEN_TTL`   | No              | Lifetime of issued access tokens in seconds (default: `3600`)                                                                                                     |
-| `MCP_OAUTH_REFRESH_TOKEN_TTL`  | No              | Maximum lifetime of a sign-in in seconds, counted from authorization; refreshing does not extend it (default: `2592000`, 30 days)                                 |
-| `MCP_OAUTH_STATE_KEY`          | No              | Secret (at least 16 characters) that encrypts OAuth state on disk so registrations and sign-ins survive restarts. Unset: in memory only                           |
-| `EMBEDDING_PROVIDER`           | No              | `openai` or `ollama` (default: `openai`)                                                                                                                          |
-| `OPENAI_API_KEY`               | If using OpenAI | Required for OpenAI embeddings                                                                                                                                    |
-| `OLLAMA_URL`                   | If using Ollama | Ollama server URL (default: `http://localhost:11434`)                                                                                                             |
-| `EMBEDDING_MODEL`              | No              | Model name (defaults per provider)                                                                                                                                |
-| `EMBEDDING_DIMENSIONS`         | No              | Vector dimensions (defaults per provider)                                                                                                                         |
-| `PAPERLESS_MCP_DATA`           | No              | Directory for the vector DB and OAuth state (default: `~/.paperless-mcp`)                                                                                         |
+| Variable                          | Required        | Description                                                                                                                                                                                                         |
+| --------------------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `PAPERLESS_URL`                   | Yes             | Base URL of your Paperless-ngx instance                                                                                                                                                                             |
+| `PAPERLESS_TOKEN`                 | Yes             | API token. In `stdio` mode this is the user's token; in `http` mode it is the admin/indexer token (builds the shared embedding index and gates `sync_embeddings`)                                                   |
+| `PAPERLESS_API_VERSION`           | No              | Paperless REST API version to request (default: `9`). Set to `10` for Paperless-ngx 3.0+ v10 semantics, or `none` to send no version header                                                                         |
+| `PAPERLESS_TIMEOUT_MS`            | No              | Per-request timeout in milliseconds (default: `60000`; `0` disables). GET downloads are timed until headers arrive; uploads and bulk downloads are not timed                                                        |
+| `PAPERLESS_MAX_RETRIES`           | No              | Retries for GET/HEAD requests on network errors, timeouts, 429, 502, 503 and 504, with exponential backoff and `Retry-After` support (default: `2`, max `10`)                                                       |
+| `MCP_TRANSPORT`                   | No              | `stdio` (default) or `http`                                                                                                                                                                                         |
+| `PORT`                            | No              | Port for the HTTP server (default: `3001`, http mode only)                                                                                                                                                          |
+| `EMBEDDINGS_ENABLED`              | No              | Set to `true` to enable semantic search tools (default: off)                                                                                                                                                        |
+| `PAPERLESS_TOOLSETS`              | No              | Comma-separated tool groups to register (default: all). See [Limiting tools](#limiting-tools)                                                                                                                       |
+| `PAPERLESS_READ_ONLY`             | No              | Set to `true` to register only read-only tools (default: off)                                                                                                                                                       |
+| `PAPERLESS_DISABLED_TOOLS`        | No              | Comma-separated tool names to skip                                                                                                                                                                                  |
+| `MCP_ALLOWED_ORIGINS`             | No              | Comma-separated `Origin` allowlist for browser clients (http mode). Empty (default) blocks all cross-origin browser requests; use `*` to allow any                                                                  |
+| `MCP_ALLOWED_HOSTS`               | No              | Comma-separated `Host` allowlist for DNS-rebinding protection (http mode). Empty (default) disables host validation                                                                                                 |
+| `MCP_HTTP_HOST`                   | No              | Bind address for the HTTP server (default: `127.0.0.1`). Set it explicitly (e.g. `0.0.0.0`) only when the port must be reachable from other machines                                                                |
+| `MCP_MAX_BODY_BYTES`              | No              | Maximum JSON request body size in bytes (default: `2097152`); larger bodies are rejected with `413`                                                                                                                 |
+| `MCP_BODY_TIMEOUT_MS`             | No              | Maximum time in milliseconds to wait for a request body (default: `30000`)                                                                                                                                          |
+| `MCP_MAX_SESSIONS`                | No              | Maximum concurrent MCP sessions, global (default: `100`); further initializations get `429`                                                                                                                         |
+| `MCP_MAX_SESSIONS_PER_CREDENTIAL` | No              | Maximum concurrent MCP sessions per credential (default: `10`); further initializations get `429`                                                                                                                   |
+| `MCP_MAX_CONCURRENT_INIT`         | No              | Maximum in-flight session initializations (default: `10`); excess initializations get `429`                                                                                                                         |
+| `MCP_MAX_CONCURRENT_AUTH`         | No              | Maximum concurrent Paperless token validations (default: `20`); excess requests are refused `429` instead of piling up unbounded outstanding auth work                                                              |
+| `MCP_AUTH_TIMEOUT_MS`             | No              | Timeout for the per-request `/api/profile/` validation probe (default: `15000`); the probe never retries                                                                                                            |
+| `MCP_MAX_DOWNLOAD_BYTES`          | No              | Maximum buffered size for downloaded documents (thumbnails, bulk zips, PDF processing) in bytes (default: `104857600`, 100 MB)                                                                                      |
+| `MCP_DOWNLOAD_TIMEOUT_MS`         | No              | Total deadline for reading a downloaded document body; the response is cancelled on timeout (default: `30000`)                                                                                                      |
+| `MCP_MAX_IDS_PER_REQUEST`         | No              | Maximum document IDs accepted per multi-ID request such as `get_documents` (default: `100`)                                                                                                                         |
+| `MCP_MAX_SEARCH_RESULTS`          | No              | Maximum results returned by `semantic_search` (default: `100`)                                                                                                                                                      |
+| `MCP_SESSION_IDLE_MS`             | No              | Idle lifetime of an MCP session in milliseconds (default: `1800000`, 30 minutes); idle sessions are swept and must re-initialize                                                                                    |
+| `PAPERLESS_FS_ROOTS`              | No              | Comma-separated directories that stdio filesystem tools may read from and write into. Unset (default): filesystem tools do not register. Ignored with a warning in http mode, where filesystem tools are always off |
+| `PAPERLESS_FS_MAX_READ_BYTES`     | No              | Maximum size in bytes for a regular-file read by filesystem tools (default: `52428800`, 50 MB)                                                                                                                      |
+| `MCP_OAUTH_ISSUER`                | No              | OIDC issuer URL of your identity provider. Setting it enables [OAuth mode](#oauth-optional) (http mode only)                                                                                                        |
+| `MCP_OAUTH_CLIENT_ID`             | With OAuth      | Client ID of the OIDC client Paperless uses                                                                                                                                                                         |
+| `MCP_OAUTH_CLIENT_SECRET`         | No              | Client secret of that client (omit for public clients)                                                                                                                                                              |
+| `MCP_OAUTH_PAPERLESS_PROVIDER`    | With OAuth      | `provider_id` of the OIDC app in `PAPERLESS_SOCIALACCOUNT_PROVIDERS`                                                                                                                                                |
+| `MCP_PUBLIC_URL`                  | With OAuth      | Externally reachable origin of this server, e.g. `https://mcp.example.com`                                                                                                                                          |
+| `MCP_OAUTH_SCOPES`                | No              | Scopes requested from the identity provider (default: `openid email profile`)                                                                                                                                       |
+| `MCP_OAUTH_TOKEN_AUTH_METHOD`     | No              | `client_secret_post` or `client_secret_basic` for the IdP token request (default: picked from discovery, like Paperless)                                                                                            |
+| `MCP_OAUTH_ACCESS_TOKEN_TTL`      | No              | Lifetime of issued access tokens in seconds (default: `3600`)                                                                                                                                                       |
+| `MCP_OAUTH_REFRESH_TOKEN_TTL`     | No              | Maximum lifetime of a sign-in in seconds, counted from authorization; refreshing does not extend it (default: `2592000`, 30 days)                                                                                   |
+| `MCP_OAUTH_STATE_KEY`             | No              | Secret (at least 16 characters) that encrypts OAuth state on disk so registrations and sign-ins survive restarts. Unset: in memory only                                                                             |
+| `EMBEDDING_PROVIDER`              | No              | `openai` or `ollama` (default: `openai`)                                                                                                                                                                            |
+| `OPENAI_API_KEY`                  | If using OpenAI | Required for OpenAI embeddings                                                                                                                                                                                      |
+| `OLLAMA_URL`                      | If using Ollama | Ollama server URL (default: `http://localhost:11434`)                                                                                                                                                               |
+| `EMBEDDING_MODEL`                 | No              | Model name (defaults per provider)                                                                                                                                                                                  |
+| `EMBEDDING_DIMENSIONS`            | No              | Vector dimensions (defaults per provider)                                                                                                                                                                           |
+| `PAPERLESS_MCP_DATA`              | No              | Directory for the vector DB and OAuth state (default: `~/.paperless-mcp`)                                                                                                                                           |
 
 ## Transports
 
@@ -236,6 +325,22 @@ Paperless API token via an `Authorization: Bearer <token>` header (or
 `X-Paperless-Token`). Every Paperless call is made with that token, so each user
 only sees the documents their account permits. The token must be sent on every
 request; a session only accepts the token it was initialized with.
+
+In this fork, a token is validated against Paperless (`GET /api/profile/`)
+before any MCP operation and revalidated on every request, so a token revoked in
+Paperless stops working immediately — including mid-session and for OAuth-mapped
+credentials. Tokens are never logged. Further fork hardening: request bodies are
+size-capped (`MCP_MAX_BODY_BYTES`, rejected with 413) and time-capped
+(`MCP_BODY_TIMEOUT_MS`), sessions are capped globally and per credential (429)
+and expire when idle (`MCP_SESSION_IDLE_MS`), pending initializations count
+against the session caps atomically, concurrent initializations and token
+validations are bounded (`MCP_MAX_CONCURRENT_INIT`, `MCP_MAX_CONCURRENT_AUTH`),
+read-side amplification is capped (`MCP_MAX_DOWNLOAD_BYTES`,
+`MCP_DOWNLOAD_TIMEOUT_MS`,
+`MCP_MAX_IDS_PER_REQUEST`, `MCP_MAX_SEARCH_RESULTS`), and the server binds to
+`127.0.0.1` unless `MCP_HTTP_HOST` is set.
+Expose the port beyond localhost only deliberately, e.g. inside a container
+network.
 
 `PAPERLESS_TOKEN` is the admin/indexer token: it builds the shared semantic-search
 index, and the `sync_embeddings` tool is only available to a session using the
@@ -354,35 +459,35 @@ Notes:
 
 ## Run as an HTTP sidecar (Docker)
 
-A prebuilt image is published to the GitHub Container Registry on every release
-and every push to `main`:
-
-```
-ghcr.io/orellbuehler/paperless-mcp:latest   # tracks main
-ghcr.io/orellbuehler/paperless-mcp:1         # latest 1.x release
-ghcr.io/orellbuehler/paperless-mcp:1.0.0     # exact version
-```
-
-Pull it directly:
+No prebuilt container image is advertised for this fork yet. Build the image
+locally from this checkout — the build compiles the TypeScript and the native
+`better-sqlite3` module itself (`npm ci --ignore-scripts` inside the image,
+then an explicit `npm rebuild better-sqlite3`, so no third-party install
+script runs implicitly):
 
 ```bash
-docker pull ghcr.io/orellbuehler/paperless-mcp:latest
+docker build -t paperless-mcp-hardened .
 ```
 
-Add the server as a service next to your existing Paperless-ngx compose stack:
+Add the server as a service next to your existing Paperless-ngx compose stack.
+Inside a container the server must bind to `0.0.0.0` to be reachable, and the
+published port is bound to host loopback only so the LAN cannot bypass your
+reverse proxy:
 
 ```yaml
 paperless-mcp:
-  image: ghcr.io/orellbuehler/paperless-mcp:latest
+  build: .
+  image: paperless-mcp-hardened
   restart: unless-stopped
   depends_on:
     - webserver
   ports:
-    - 3001:3001
+    - "127.0.0.1:3001:3001"
   volumes:
     - /mnt/ssd/paperless_ngx/mcp:/data
   environment:
     MCP_TRANSPORT: http
+    MCP_HTTP_HOST: 0.0.0.0
     PORT: 3001
     PAPERLESS_URL: http://webserver:8000
     PAPERLESS_TOKEN: <admin-token>
@@ -396,24 +501,33 @@ The image already defaults to `MCP_TRANSPORT=http`, `PORT=3001`, and
 `PAPERLESS_MCP_DATA=/data`, so the only variables you must set are
 `PAPERLESS_URL` and `PAPERLESS_TOKEN` (plus `OPENAI_API_KEY` when semantic
 search is enabled). Mount a volume at `/data` to persist the embedding index
-(and, with `MCP_OAUTH_STATE_KEY`, OAuth sign-ins) across restarts.
+(and, with `MCP_OAUTH_STATE_KEY`, OAuth sign-ins) across restarts. In a container, set `MCP_HTTP_HOST=0.0.0.0` (or the container-facing interface) so
+other containers can reach the server — the default bind of `127.0.0.1` is only
+reachable from inside the container itself — and publish the port only to host
+loopback (`127.0.0.1:3001:3001`) or a private network. Outside containers, keep the default
+localhost bind and put a reverse proxy in front if remote access is needed.
+
+The image runs as the non-root `node` user with a root-owned `/app`; only the
+`/data` volume is writable by the runtime user, and it works with
+`read_only: true` (read-only root filesystem): everything that persists goes
+to `/data`. If you mount a `/data` directory previously written by a different
+uid (e.g. by an older image running as root), fix its ownership once on the
+host before starting, e.g. `sudo chown -R 1000:1000 /mnt/ssd/paperless_ngx/mcp`
+(uid 1000 is the `node` user in the image).
 
 LAN clients connect to `http://<host>:3001/mcp` with their own Paperless API
-token. Run `sync_embeddings` once with the admin token to build the shared
+token — only after you have published the port to a trusted interface as shown
+above. Run `sync_embeddings` once with the admin token to build the shared
 semantic index.
 
-To build the image yourself instead of pulling it, a `Dockerfile` is included:
-
-```bash
-docker build -t paperless-mcp .
-```
+To run without Docker, see the build steps in Quick start.
 
 ## Development
 
 For local development, clone the repo and build the `dist/` output:
 
 ```bash
-npm install
+npm ci --ignore-scripts
 npm run build
 npm test
 ```
@@ -436,7 +550,8 @@ The server runs from the compiled `dist/` output, so updating is just rebuild + 
 
 ```bash
 git pull          # if you track a remote
-npm install       # only if dependencies changed
+npm ci --ignore-scripts       # deterministic dependency install
+npm rebuild better-sqlite3    # only if dependencies changed and you use semantic search
 npm run build     # recompile src/ -> dist/
 ```
 

@@ -81,7 +81,6 @@ export const toolAnnotations: Record<string, ToolAnnotations> = {
   get_documents_by_correspondent: read,
   monthly_summary: read,
   yearly_document_check: read,
-  upload_from_url: createExternal,
 
   list_users: read,
   get_user: read,

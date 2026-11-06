@@ -34,7 +34,10 @@ export function registerSearchTools(server: McpServer, client: PaperlessClient) 
     },
     async ({ query, limit }) => {
       try {
-        const limitN = limit || 10;
+        const limitN = Math.min(
+          limit && limit > 0 ? Math.floor(limit) : 10,
+          config.maxSearchResults,
+        );
         const queryEmbedding = await embedSingle(query);
         // Over-fetch from the global index, then drop docs the user's token
         // cannot see, so permission filtering doesn't starve restricted users.

@@ -1,3 +1,4 @@
+import path from "node:path";
 import { PaperlessClient } from "./paperless/client.js";
 
 const baseUrl = (process.env.PAPERLESS_URL || "").replace(/\/+$/, "");
@@ -51,7 +52,9 @@ function toolsetsFrom(value: string | undefined): Toolset[] {
 
 function nonNegativeInt(value: string | undefined, fallback: number): number {
   const raw = (value ?? "").trim();
-  return /^\d+$/.test(raw) ? Number(raw) : fallback;
+  if (!/^\d+$/.test(raw)) return fallback;
+  const n = Number(raw);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 const timeoutMs = nonNegativeInt(process.env.PAPERLESS_TIMEOUT_MS, 60000);
@@ -60,6 +63,16 @@ const clientOptions = {
   timeoutMs: timeoutMs > 2147483647 ? 60000 : timeoutMs,
   maxRetries: Math.min(nonNegativeInt(process.env.PAPERLESS_MAX_RETRIES, 2), 10),
 };
+
+function positiveInt(value: string | undefined, fallback: number, max = 2147483647): number {
+  const raw = (value ?? "").trim();
+  if (!/^\d+$/.test(raw)) return fallback;
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n < 1 || n > max) return fallback;
+  return n;
+}
+
+const maxSessions = positiveInt(process.env.MCP_MAX_SESSIONS, 100, 10000);
 
 export const config = {
   baseUrl,
@@ -74,7 +87,32 @@ export const config = {
   toolsets: toolsetsFrom(process.env.PAPERLESS_TOOLSETS),
   readOnly: /^(1|true|yes)$/i.test(process.env.PAPERLESS_READ_ONLY || ""),
   disabledTools: csv(process.env.PAPERLESS_DISABLED_TOOLS),
+  fsRoots: csv(process.env.PAPERLESS_FS_ROOTS).map((r) => path.resolve(r)),
+  fsMaxReadBytes: positiveInt(process.env.PAPERLESS_FS_MAX_READ_BYTES, 52428800),
+  httpHost: (process.env.MCP_HTTP_HOST || "127.0.0.1").trim(),
+  maxBodyBytes: positiveInt(process.env.MCP_MAX_BODY_BYTES, 2097152),
+  bodyTimeoutMs: positiveInt(process.env.MCP_BODY_TIMEOUT_MS, 30000),
+  maxSessions,
+  maxSessionsPerCredential: positiveInt(
+    process.env.MCP_MAX_SESSIONS_PER_CREDENTIAL,
+    10,
+    maxSessions,
+  ),
+  maxInFlightInit: positiveInt(process.env.MCP_MAX_CONCURRENT_INIT, 10, 1000),
+  maxInFlightAuth: positiveInt(process.env.MCP_MAX_CONCURRENT_AUTH, 20, 1000),
+  authTimeoutMs: positiveInt(process.env.MCP_AUTH_TIMEOUT_MS, 15000),
+  sessionIdleMs: positiveInt(process.env.MCP_SESSION_IDLE_MS, 1800000, 2147483647),
+  maxDownloadBytes: positiveInt(process.env.MCP_MAX_DOWNLOAD_BYTES, 104857600, 2147483647),
+  downloadTimeoutMs: positiveInt(process.env.MCP_DOWNLOAD_TIMEOUT_MS, 30000),
+  maxIdsPerRequest: positiveInt(process.env.MCP_MAX_IDS_PER_REQUEST, 100, 1000),
+  maxSearchResults: positiveInt(process.env.MCP_MAX_SEARCH_RESULTS, 100, 1000),
 };
+
+if (config.transport === "http" && config.fsRoots.length > 0) {
+  console.error(
+    "PAPERLESS_FS_ROOTS is ignored in http transport: filesystem tools are disabled there",
+  );
+}
 
 if (
   process.env.PAPERLESS_TOOLSETS &&

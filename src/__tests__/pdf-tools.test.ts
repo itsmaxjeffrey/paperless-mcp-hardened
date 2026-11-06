@@ -6,6 +6,7 @@ import { PDFDocument, StandardFonts } from "pdf-lib";
 
 vi.stubEnv("PAPERLESS_URL", "http://localhost:8000");
 vi.stubEnv("PAPERLESS_TOKEN", "test-token-123");
+vi.stubEnv("PAPERLESS_FS_ROOTS", tmpdir());
 
 const { registerDocumentTools } = await import("../tools/documents.js");
 const { PaperlessClient } = await import("../paperless/client.js");
@@ -19,7 +20,7 @@ const server = {
     tools.set(name, handler);
   },
 };
-registerDocumentTools(server as any, client);
+registerDocumentTools(server as any, client, { filesystem: true });
 
 async function makePdf(pageTexts: string[]) {
   const doc = await PDFDocument.create();

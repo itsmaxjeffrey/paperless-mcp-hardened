@@ -451,7 +451,7 @@
           <a href="#features">Features</a>
           <a href="#tools">Tools</a>
           <a href="#deploy">Deploy</a>
-          <a href="https://github.com/OrellBuehler/paperless-mcp">GitHub</a>
+          <a href="https://github.com/itsmaxjeffrey/paperless-mcp-hardened">GitHub</a>
         </nav>
       </div>
     </header>
@@ -465,17 +465,28 @@
           Search, upload, tag, split and share documents in plain language, with optional semantic
           search across everything you have ever scanned.
         </p>
+        <p class="lead" style="font-size: 0.85em">
+          This is an independent security-hardening fork of
+          <a href="https://github.com/itsmaxjeffrey/paperless-mcp-hardened"
+            >itsmaxjeffrey/paperless-mcp-hardened</a
+          >
+          (MIT; base commit <code>11710d7</code>, release 1.6.0). It validates every HTTP token
+          against Paperless on each request, disables filesystem tools on HTTP, restricts local file
+          access to configured roots on stdio, removes <code>upload_from_url</code>, and adds
+          request/session limits. See <code>SECURITY-CHANGES.md</code> in the repository.
+        </p>
         <div class="cta">
           <a class="btn primary" href="#quickstart">Get started</a>
-          <a class="btn" href="https://github.com/OrellBuehler/paperless-mcp">View on GitHub</a>
-          <a class="btn" href="https://www.npmjs.com/package/@orellbuehler/paperless-mcp">npm</a>
+          <a class="btn" href="https://github.com/itsmaxjeffrey/paperless-mcp-hardened"
+            >View on GitHub</a
+          >
         </div>
 
         <div class="install" id="quickstart">
           <pre><code id="cmd">claude mcp add paperless \
   --env PAPERLESS_URL=https://paperless.example.com \
   --env PAPERLESS_TOKEN=your-api-token \
-  -- npx -y @orellbuehler/paperless-mcp</code></pre>
+  -- node /path/to/paperless-mcp-hardened/dist/index.js</code></pre>
           <button class="copy" type="button" data-copy="cmd">Copy</button>
         </div>
 
@@ -614,8 +625,8 @@
               </div>
               <h3>Docker sidecar</h3>
               <p>
-                Prebuilt image on GHCR. Drop it next to Paperless in your compose stack and point
-                your clients at <code>/mcp</code>.
+                Build locally with the included <code>Dockerfile</code>. Drop it next to Paperless
+                in your compose stack and point your clients at <code>/mcp</code>.
               </p>
             </div>
             <div class="card">
@@ -695,12 +706,14 @@
           <h2>Tool catalog</h2>
           <p class="section-lead">
             Grouped by area, plus MCP prompts and resources. Expand a group to see its entries; the
-            <a href="https://github.com/OrellBuehler/paperless-mcp#available-tools">README</a> has
-            the details.
+            <a href="https://github.com/itsmaxjeffrey/paperless-mcp-hardened#available-tools"
+              >README</a
+            >
+            has the details.
           </p>
           <div class="catalog">
             <details>
-              <summary>Documents and search <span class="count">18</span></summary>
+              <summary>Documents and search <span class="count">17</span></summary>
               <ul>
                 <li><code>search_documents</code></li>
                 <li><code>search_autocomplete</code></li>
@@ -719,7 +732,6 @@
                 <li><code>get_document_history</code></li>
                 <li><code>get_document_thumbnail</code></li>
                 <li><code>get_document_content</code></li>
-                <li><code>upload_from_url</code></li>
               </ul>
             </details>
             <details>
@@ -911,7 +923,9 @@
                 <svg viewBox="0 0 24 24"><path d="M4 17l6-5-6-5M12 19h8" /></svg>
               </div>
               <h3>stdio, single user</h3>
-              <p>Your MCP client launches the server via <code>npx</code>. Nothing to host.</p>
+              <p>
+                Your MCP client launches the compiled server from a local checkout. Nothing to host.
+              </p>
               <ul>
                 <li>Claude Code, Claude Desktop, any MCP client</li>
                 <li>Uses your Paperless API token</li>
@@ -921,8 +935,8 @@
               <pre><code>{
   "mcpServers": {
     "paperless": {
-      "command": "npx",
-      "args": ["-y", "@orellbuehler/paperless-mcp"],
+      "command": "node",
+      "args": ["/path/to/paperless-mcp-hardened/dist/index.js"],
       "env": {
         "PAPERLESS_URL": "https://paperless.example.com",
         "PAPERLESS_TOKEN": "your-api-token"
@@ -942,15 +956,16 @@
               <h3>HTTP sidecar, multi-user</h3>
               <p>One server for everyone. Each request runs with the caller's own token.</p>
               <ul>
-                <li>Prebuilt Docker image on GHCR</li>
+                <li>Local <code>docker build</code> from this checkout</li>
                 <li>Optional OAuth sign-in via your Paperless OIDC provider</li>
                 <li>Shared semantic index, filtered per user</li>
               </ul>
               <pre><code>paperless-mcp:
-  image: ghcr.io/orellbuehler/paperless-mcp:latest
-  ports: ["3001:3001"]
+  build: .
+  ports: ["127.0.0.1:3001:3001"]
   volumes: ["./mcp:/data"]
   environment:
+    MCP_HTTP_HOST: 0.0.0.0
     PAPERLESS_URL: http://webserver:8000
     PAPERLESS_TOKEN: &lt;admin-token&gt;</code></pre>
             </div>
@@ -1012,13 +1027,8 @@
       <div class="wrap">
         <span>MIT licensed. Not affiliated with the Paperless-ngx project.</span>
         <span>
-          <a href="https://github.com/OrellBuehler/paperless-mcp">GitHub</a> ·
-          <a href="https://www.npmjs.com/package/@orellbuehler/paperless-mcp">npm</a> ·
-          <a href="https://github.com/OrellBuehler/paperless-mcp/pkgs/container/paperless-mcp"
-            >Docker</a
-          >
-          ·
-          <a href="https://github.com/OrellBuehler/paperless-mcp/issues">Issues</a>
+          <a href="https://github.com/itsmaxjeffrey/paperless-mcp-hardened">GitHub</a> ·
+          <a href="https://github.com/itsmaxjeffrey/paperless-mcp-hardened/issues">Issues</a>
         </span>
       </div>
     </footer>

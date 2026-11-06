@@ -36,11 +36,7 @@ describe("core tools use the injected client", () => {
     let path = "";
     (c as any).download = async (p: string) => {
       path = p;
-      return {
-        ok: true,
-        headers: new Map([["content-type", "text/plain"]]),
-        text: async () => "hi",
-      };
+      return new Response("hi", { headers: { "content-type": "text/plain" } });
     };
     const t = collect(registerCoreTools, c);
     const res = await t.get("download_document")!({ id: 5 });
@@ -62,28 +58,10 @@ describe("helper tools use the injected client", () => {
     expect(calls).toEqual(["/api/documents/1/", "/api/documents/2/"]);
   });
 
-  it("upload_from_url calls client.upload", async () => {
+  it("no longer registers upload_from_url", async () => {
     const c = new PaperlessClient("https://p.example.com", "user-tok");
-    let uploaded = false;
-    (c as any).upload = async () => {
-      uploaded = true;
-      return { ok: true, json: async () => ({ task: "t" }), headers: new Map() };
-    };
-    const realFetch = global.fetch;
-    global.fetch = (async () => ({
-      ok: true,
-      status: 200,
-      headers: new Map([["content-length", "10"]]),
-      blob: async () => new Blob(["data"]),
-    })) as unknown as typeof fetch;
-    try {
-      const t = collect(registerHelperTools, c);
-      const res = await t.get("upload_from_url")!({ url: "https://example.com/file.pdf" });
-      expect(uploaded).toBe(true);
-      expect(res.isError).toBeFalsy();
-    } finally {
-      global.fetch = realFetch;
-    }
+    const t = collect(registerHelperTools, c);
+    expect(t.has("upload_from_url")).toBe(false);
   });
 });
 
